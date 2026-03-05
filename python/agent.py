@@ -9,6 +9,8 @@ import os
 import json
 import re
 import concurrent.futures
+from pydantic import BaseModel, Field
+from typing import Literal, Optional
 from google import genai
 from google.genai import types
 from memory import get_reflection_context, get_override_patterns
@@ -266,6 +268,81 @@ MOCK_RESPONSES = {
 
 
 # ---------------------------------------------------------------------------
+# PYDANTIC SCHEMAS FOR STRUCTURED OUTPUTS
+# ---------------------------------------------------------------------------
+
+class ReasoningStep(BaseModel):
+    step: int = Field(description="Step number (1-5)")
+    stage: str = Field(description="Stage name, e.g. Perception Analysis, Inventory Risk Assessment")
+    thought: str = Field(description="The specific reasoning and mathematical justification for this step.")
+
+class RiskAssessment(BaseModel):
+    stockout_probability: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"] = Field(description="Probability of running out of stock")
+    days_until_critical: float = Field(description="Number of days until inventory hits zero if nothing changes")
+    financial_exposure_usd: int = Field(description="Total revenue at risk during the stockout period")
+    confidence_score: float = Field(description="Confidence in this assessment between 0.0 and 1.0")
+
+class ChosenStrategy(BaseModel):
+    id: Literal["WAIT", "ACTIVATE_SECONDARY", "SPLIT_ORDER", "ACTIVATE_TERTIARY", "BUFFER_STOCK_BUILD"] = Field(description="The primary action category selected")
+    name: str = Field(description="Human-readable name for the strategy")
+    description: str = Field(description="1-2 sentences explaining the strategy")
+    primary_action: str = Field(description="The single most important technical action to execute right now")
+    cost_premium_usd: int = Field(description="The additional cost incurred by this strategy over business-as-usual")
+    risk_reduction: str = Field(description="How this strategy directly mitigates the identified risk")
+
+class DraftEmail(BaseModel):
+    to: str = Field(description="Supplier email address to send the PO to")
+    subject: str = Field(description="Subject line for the communication")
+    body: str = Field(description="Full email body, including quantity, delivery terms, and explanation")
+
+class HitlFlag(BaseModel):
+    requires_human_approval: bool = Field(description="True if the action exceeds thresholds or requires compliance review")
+    reason: str = Field(description="Explanation of why human approval is or is not required")
+    escalate_to: Optional[str] = Field(description="Role to escalate to, or null if fully autonomous", default=None)
+    deadline_hours: Optional[int] = Field(description="Hours until a decision is required", default=None)
+
+class AgentDecision(BaseModel):
+    reasoning_trace: list[ReasoningStep] = Field(description="5 reasoning steps covering all 5 stages of the pipeline")
+    risk_assessment: RiskAssessment = Field(description="Assessment of current stockout risk")
+    chosen_strategy: ChosenStrategy = Field(description="The optimal strategy selected by the agent")
+    draft_email: DraftEmail = Field(description="Auto-generated procurement email")
+    hitl_flag: HitlFlag = Field(description="Human-in-the-loop escalation rules")
+
+# ---------------------------------------------------------------------------
+# DETERMINISTIC MATH HELPER
+# ---------------------------------------------------------------------------
+
+def _calculate_supplier_options(erp_data: dict, delay_added_days: float) -> list[str]:
+    """
+    Precalculate the actual transit delay, cost premium, and SLA violation days
+    for each supplier option so the LLM doesn't have to guess the math.
+    """
+    options = []
+    primary = erp_data["suppliers"].get("primary")
+    primary_cost = primary["unit_cost_usd"] if primary else 0
+    sla_max = erp_data["sla"]["max_acceptable_delay_days"]
+
+    for role, sup in erp_data["suppliers"].items():
+        # Only the primary supplier is affected by the disruption delay in this simple model
+        extra_delay = delay_added_days if role == "primary" else 0
+        effective_lead_time = sup["normal_lead_time_days"] + extra_delay
+        cost_premium = sup["unit_cost_usd"] - primary_cost
+        
+        sla_violation_days = max(0, effective_lead_time - sla_max)
+        sla_status = f"VIOLATES SLA by {sla_violation_days:.1f} days" if sla_violation_days > 0 else "Complies with SLA"
+
+        option_str = (
+            f"Option [{role.upper()}] - {sup['name']} ({sup['city']}):\n"
+            f"  - Unit Cost: ${sup['unit_cost_usd']:.2f} (Premium vs Primary: +${cost_premium:.2f})\n"
+            f"  - Effective Lead Time: {effective_lead_time:.1f} days "
+            f"(Normal: {sup['normal_lead_time_days']}, Delay: +{extra_delay:.1f})\n"
+            f"  - SLA Impact: {sla_status}"
+        )
+        options.append(option_str)
+        
+    return options
+
+# ---------------------------------------------------------------------------
 # PROMPT BUILDER
 # ---------------------------------------------------------------------------
 
@@ -314,9 +391,10 @@ def _build_prompt(
     suppliers_block = "\n".join(supplier_lines)
     supplier_health_block = "\n".join(health_lines)
 
+    mathematical_options = "\n\n".join(_calculate_supplier_options(erp_data, transit_data.get('delay_added_days', 0)))
+
     return f"""You are TranSignal, an Autonomous Supply Chain Resilience Agent for a mid-market manufacturer.
 Analyse the disruption, assess risk, simulate trade-offs, choose the optimal strategy, and draft an email.
-Respond with a single valid JSON object only — no prose, no markdown fences.
 
 === COMPANY PROFILE ===
 Company:          {erp_data['company']}
@@ -352,6 +430,9 @@ Urgency:          {risk_assessment.get('urgency')}
 === SUPPLIER HEALTH SCORES (derived from ERP signals) ===
 {supplier_health_block}
 
+=== DETERMINISTIC MATH OPTIONS (Pre-calculated Trade-offs) ===
+{mathematical_options}
+
 === SLA & FINANCIAL CONTEXT ===
 Key customer:            {sla['key_customer']}
 Max acceptable delay:    {sla['max_acceptable_delay_days']} days
@@ -374,7 +455,7 @@ Supported disruption types and their primary mitigation implications:
 === INSTRUCTIONS ===
 1. In your reasoning, REFERENCE the memory/history above where relevant.
 2. Write 5 reasoning steps covering all 5 stages below.
-3. Each step must include specific numbers — no vague statements.
+3. In Step 3 (Simulation), strictly use the values provided in the DETERMINISTIC MATH OPTIONS section. Do not invent your own delay or cost calculations.
 4. Choose exactly one strategy ID: WAIT | ACTIVATE_SECONDARY | SPLIT_ORDER | ACTIVATE_TERTIARY | BUFFER_STOCK_BUILD.
    - For Supplier Insolvency: default to ACTIVATE_SECONDARY or ACTIVATE_TERTIARY — WAIT is not viable.
    - For Semiconductor Shortage: prefer SPLIT_ORDER to diversify allocation risk.
@@ -382,42 +463,7 @@ Supported disruption types and their primary mitigation implications:
 5. The company's risk_appetite must influence the strategy (low=cautious, high=aggressive).
 6. Set hitl_flag.requires_human_approval=true if order value > autonomous_action_limit OR the event is Geopolitical Sanctions or Supplier Insolvency (mandatory legal/compliance review).
 7. BIAS GUARD: Base all supplier recommendations solely on lead time, cost, health score, and disruption proximity. Do not systematically favour or penalise any supplier based on country of origin or geographic region unless the active disruption directly implicates that location.
-
-=== JSON SCHEMA ===
-{{
-  "reasoning_trace": [
-    {{"step": 1, "stage": "Perception Analysis",           "thought": "<specific reasoning>"}},
-    {{"step": 2, "stage": "Inventory Risk Assessment",     "thought": "<specific numbers>"}},
-    {{"step": 3, "stage": "Supplier Trade-off Simulation", "thought": "<option A vs B vs C with costs>"}},
-    {{"step": 4, "stage": "Decision & Strategy",           "thought": "<justification with numbers>"}},
-    {{"step": 5, "stage": "Action Execution",              "thought": "<what is executed and why>"}}
-  ],
-  "risk_assessment": {{
-    "stockout_probability": "<LOW|MEDIUM|HIGH|CRITICAL>",
-    "days_until_critical": <float>,
-    "financial_exposure_usd": <integer>,
-    "confidence_score": <float 0.0-1.0>
-  }},
-  "chosen_strategy": {{
-    "id": "<WAIT|ACTIVATE_SECONDARY|SPLIT_ORDER|ACTIVATE_TERTIARY>",
-    "name": "<human-readable name>",
-    "description": "<1-2 sentences>",
-    "primary_action": "<single most important action right now>",
-    "cost_premium_usd": <integer>,
-    "risk_reduction": "<how risk is reduced>"
-  }},
-  "draft_email": {{
-    "to": "<supplier email>",
-    "subject": "<subject line>",
-    "body": "<full email body, newlines as \\n>"
-  }},
-  "hitl_flag": {{
-    "requires_human_approval": <true|false>,
-    "reason": "<explanation>",
-    "escalate_to": "<role or null>",
-    "deadline_hours": <integer or null>
-  }}
-}}"""
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +511,7 @@ def run_agent(
                 config=types.GenerateContentConfig(
                     temperature=0.15,
                     response_mime_type="application/json",
+                    response_schema=AgentDecision,
                 ),
             )
             try:
@@ -475,19 +522,11 @@ def run_agent(
                 )
 
         raw_text = response.text or ""
-
-        # Robust JSON extraction: try direct parse first, then strip markdown fences
+        
         try:
             parsed = json.loads(raw_text)
         except json.JSONDecodeError:
-            # Strip leading/trailing code fences if present
-            clean = re.sub(r"^```(?:json)?\s*\n?", "", raw_text.strip(), flags=re.MULTILINE)
-            clean = re.sub(r"\n?```\s*$", "", clean.strip(), flags=re.MULTILINE)
-            # Last resort: extract the outermost JSON object
-            obj_match = re.search(r"\{[\s\S]*\}", clean)
-            if not obj_match:
-                raise ValueError(f"No JSON object found in Gemini response: {raw_text[:200]}")
-            parsed = json.loads(obj_match.group(0))
+            raise ValueError(f"Failed to parse structured JSON output from Gemini: {raw_text[:200]}")
 
         parsed["_is_mock"] = False
         return parsed

@@ -96,5 +96,33 @@
     "strategy_name": "Split Order with Secondary Supplier",
     "cost_premium_usd": 3800,
     "outcome": "pending"
+  },
+  {
+    "id": 8,
+    "timestamp": "2026-03-05T17:53:32.445612",
+    "company": "AcmeMfg GmbH",
+    "event_type": "Regulatory Change",
+    "event_location": "Berlin",
+    "severity": "Medium",
+    "risk_urgency": "LOW",
+    "net_days_remaining": 9.7,
+    "strategy_id": "BUFFER_STOCK_BUILD",
+    "strategy_name": "Build Buffer Stock with Secondary Supplier",
+    "cost_premium_usd": 4370,
+    "outcome": "pending"
+  },
+  {
+    "id": 9,
+    "timestamp": "2026-03-05T17:54:42.175347",
+    "company": "AcmeMfg GmbH",
+    "event_type": "Supplier Insolvency",
+    "event_location": "Hong Kong",
+    "severity": "Medium",
+    "risk_urgency": "CRITICAL",
+    "net_days_remaining": -0.6,
+    "strategy_id": "ACTIVATE_SECONDARY",
+    "strategy_name": "Activate Secondary Supplier",
+    "cost_premium_usd": 7000,
+    "outcome": "pending"
   }
 ]
