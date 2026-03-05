@@ -364,6 +364,33 @@ if st.session_state.disruption_triggered and st.session_state.disruption_event:
         f"{evt['location']} | {evt['severity']}**  ·  {evt['timestamp'][:19]}"
     )
 
+# ── Background Daemon Observer ───────────────────────────────────────────────
+st.divider()
+st.subheader("🕵️ Background Daemon Observer")
+_records = load_memory()
+_auto_records = [r for r in _records if r.get("event_source") == "AUTO_DETECTED_RSS" or r.get("source") == "AUTO_DETECTED_RSS"]
+
+if not _auto_records:
+    st.info("The background daemon (`daemon.py`) is idle or has not detected any critical signals recently. Run `python daemon.py` in the background to enable true autonomy.")
+else:
+    st.caption("Recent actions taken completely autonomously by the background daemon listener:")
+    aca, acb, acc = st.columns(3)
+    for i, r in enumerate(reversed(_auto_records[-3:])): # latest 3
+        col = [aca, acb, acc][i % 3]
+        hitl_req = r.get("hitl_requires_approval", False)
+        status_color = "#d29922" if hitl_req else "#3fb950"
+        status_text = "✋ PENDING APPROVAL" if hitl_req else "✅ AUTO-RESOLVED"
+        
+        col.markdown(
+            f'<div class="step-card" style="border-top: 3px solid {status_color};">'
+            f'<div style="font-size:0.75rem;color:#8b949e;margin-bottom:4px;">{r["timestamp"][:16]}</div>'
+            f'<div style="font-weight:bold;color:#e6edf3;margin-bottom:8px;">{r["event_type"]} at {r["event_location"]}</div>'
+            f'<div style="font-size:0.85rem;color:#c9d1d9;margin-bottom:8px;">Strategy: <b>{r["strategy_id"]}</b></div>'
+            f'<div style="font-size:0.8rem;font-weight:bold;color:{status_color};">{status_text}</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+
 # ── Top row: Map + Log ───────────────────────────────────────────────────────
 col_map, col_log = st.columns([3, 2], gap="large")
 
