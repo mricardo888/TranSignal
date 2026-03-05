@@ -1094,7 +1094,7 @@ if st.session_state.agent_result:
         else:
             # Show as interactive dataframe
             df_mem = pd.DataFrame([{
-                "ID":        r["id"],
+                "ID":        str(r["id"]),
                 "Date":      r["timestamp"][:10],
                 "Company":   r.get("company","—"),
                 "Event":     r["event_type"],

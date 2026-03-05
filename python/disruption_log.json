@@ -152,5 +152,33 @@
     "strategy_name": "Activate Secondary Supplier",
     "cost_premium_usd": 0,
     "outcome": "pending"
+  },
+  {
+    "id": "12",
+    "timestamp": "2026-03-05T18:33:01.020205",
+    "company": "AcmeMfg GmbH",
+    "event_type": "Port Strike",
+    "event_location": "Paris",
+    "severity": "High",
+    "risk_urgency": "LOW",
+    "net_days_remaining": 10.0,
+    "strategy_id": "SPLIT_ORDER",
+    "strategy_name": "Split Order Strategy",
+    "cost_premium_usd": 4000,
+    "outcome": "pending"
+  },
+  {
+    "id": "13",
+    "timestamp": "2026-03-05T18:34:00.774999",
+    "company": "AcmeMfg GmbH",
+    "event_type": "Semiconductor Shortage",
+    "event_location": "Hong Kong",
+    "severity": "High",
+    "risk_urgency": "CRITICAL",
+    "net_days_remaining": -32.5,
+    "strategy_id": "SPLIT_ORDER",
+    "strategy_name": "Split Order with Secondary Supplier",
+    "cost_premium_usd": 37050,
+    "outcome": "pending"
   }
 ]

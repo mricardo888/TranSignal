@@ -3,38 +3,80 @@ memory.py — Disruption Memory & Reflection System
 ===================================================
 Implements the "Memory & Reflection" requirement from the case package.
 
-Persists every disruption event and agent decision to a local JSON file.
-Before each new analysis, the agent reads this history and uses it to:
-  - Avoid repeating failed strategies
-  - Detect recurring suppliers/routes as systemic risks
-  - Improve confidence scoring over time
-
-Storage: disruption_log.json (same directory as this file)
+Persists every disruption event and agent decision.
+Uses Google Firebase Firestore if FIREBASE_CREDENTIALS is set.
+Otherwise, falls back to local disruption_log.json.
 """
 
 import json
 import os
 from datetime import datetime
+from dotenv import load_dotenv
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 MEMORY_FILE = os.path.join(os.path.dirname(__file__), "disruption_log.json")
 
+# --- Initialise env vars locally ---
+_here = os.path.dirname(os.path.abspath(__file__))
+_root = os.path.dirname(_here)
+load_dotenv(os.path.join(_here, ".env"))
+load_dotenv(os.path.join(_root, ".env"))
+
+# --- Firebase Initialization ---
+USE_FIREBASE = False
+db = None
+
+# Attempt to load from JSON string in env var, or file path in env var
+fb_creds_env = os.environ.get("FIREBASE_CREDENTIALS")
+if fb_creds_env:
+    try:
+        # Check if it's a JSON string
+        if fb_creds_env.strip().startswith("{"):
+            cred_dict = json.loads(fb_creds_env)
+            cred = credentials.Certificate(cred_dict)
+        else:
+            # Assume it's a file path. E.g if "./key.json", we must make it absolute relative to this file
+            if not os.path.isabs(fb_creds_env):
+                fb_creds_env = os.path.join(_here, fb_creds_env)
+            cred = credentials.Certificate(fb_creds_env)
+        
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        USE_FIREBASE = True
+        print("[MEMORY] ✅ Connected to Google Firebase Firestore.")
+    except Exception as e:
+        print(f"[MEMORY] ⚠️ Failed to initialize Firebase: {e}. Falling back to local JSON.")
+        USE_FIREBASE = False
+else:
+    print("[MEMORY] ℹ️ No FIREBASE_CREDENTIALS found. Using local JSON for memory.")
 
 # ---------------------------------------------------------------------------
 # CORE PERSISTENCE
 # ---------------------------------------------------------------------------
 
 def load_memory() -> list[dict]:
-    """Load all past disruption records. Returns empty list if no file yet."""
-    if not os.path.exists(MEMORY_FILE):
-        return []
-    try:
-        with open(MEMORY_FILE, "r") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return []
+    """Load all past disruption records from Firebase or JSON file."""
+    if USE_FIREBASE:
+        try:
+            docs = db.collection("disruption_events").order_by("timestamp").stream()
+            records = [doc.to_dict() for doc in docs]
+            return records
+        except Exception as e:
+            print(f"[MEMORY] Firebase read error: {e}")
+            return []
+    else:
+        if not os.path.exists(MEMORY_FILE):
+            return []
+        try:
+            with open(MEMORY_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return []
 
 
-def _save_memory(records: list[dict]) -> None:
+def _save_memory_local(records: list[dict]) -> None:
     with open(MEMORY_FILE, "w") as f:
         json.dump(records, f, indent=2)
 
@@ -45,23 +87,13 @@ def save_event(
     risk: dict,
     strategy: dict,
     outcome: str = "pending",
-) -> int:
-    """
-    Append a new disruption record to the log.
-
-    Args:
-        company:  Company profile name (e.g. "AcmeMfg GmbH")
-        event:    The disruption event dict (type, location, severity)
-        risk:     The risk assessment dict (urgency, net_days_remaining)
-        strategy: The chosen_strategy dict from Gemini
-        outcome:  "pending" | "resolved" | "stockout_occurred"
-
-    Returns:
-        The integer ID of the saved record.
-    """
+) -> str:
+    """Append a new disruption record to the log (Firebase or JSON)."""
     records = load_memory()
-    record_id = len(records) + 1
-    records.append({
+    # Generate generic ID
+    record_id = str(len(records) + 1)
+    
+    new_record = {
         "id": record_id,
         "timestamp": datetime.now().isoformat(),
         "company": company,
@@ -74,65 +106,67 @@ def save_event(
         "strategy_name": strategy.get("name", "Unknown"),
         "cost_premium_usd": strategy.get("cost_premium_usd", 0),
         "outcome": outcome,
-    })
-    _save_memory(records)
+    }
+    
+    if USE_FIREBASE:
+        db.collection("disruption_events").document(record_id).set(new_record)
+    else:
+        records.append(new_record)
+        _save_memory_local(records)
+        
     return record_id
 
 
-def update_outcome(record_id: int, outcome: str) -> bool:
-    """
-    Update the outcome of a past event (called after manager approves/rejects
-    and later marks the situation as resolved or as a stockout).
-
-    Args:
-        record_id: The ID returned by save_event().
-        outcome:   "resolved" | "stockout_occurred" | "pending"
-
-    Returns:
-        True if the record was found and updated, False otherwise.
-    """
-    records = load_memory()
-    for record in records:
-        if record["id"] == record_id:
-            record["outcome"] = outcome
-            record["outcome_updated_at"] = datetime.now().isoformat()
-            _save_memory(records)
+def update_outcome(record_id: str, outcome: str) -> bool:
+    if USE_FIREBASE:
+        doc_ref = db.collection("disruption_events").document(str(record_id))
+        doc = doc_ref.get()
+        if doc.exists:
+            doc_ref.update({
+                "outcome": outcome,
+                "outcome_updated_at": datetime.now().isoformat()
+            })
             return True
-    return False
+        return False
+    else:
+        records = load_memory()
+        for record in records:
+            if str(record["id"]) == str(record_id):
+                record["outcome"] = outcome
+                record["outcome_updated_at"] = datetime.now().isoformat()
+                _save_memory_local(records)
+                return True
+        return False
 
 
-def record_human_override(record_id: int, original_strategy_id: str, override_reason: str) -> bool:
-    """
-    Log when a human overrides the agent's recommended strategy.
-    This creates a learning signal: the agent will see which strategies
-    humans rejected and why, improving future recommendations.
-
-    Args:
-        record_id:           The ID returned by save_event().
-        original_strategy_id: The strategy the agent recommended.
-        override_reason:     Free-text reason from the human operator.
-
-    Returns:
-        True if the record was found and updated, False otherwise.
-    """
-    records = load_memory()
-    for record in records:
-        if record["id"] == record_id:
-            record["human_override"] = True
-            record["original_strategy_id"] = original_strategy_id
-            record["override_reason"] = override_reason
-            record["override_at"] = datetime.now().isoformat()
-            record["outcome"] = "overridden"
-            _save_memory(records)
+def record_human_override(record_id: str, original_strategy_id: str, override_reason: str) -> bool:
+    if USE_FIREBASE:
+        doc_ref = db.collection("disruption_events").document(str(record_id))
+        if doc_ref.get().exists:
+            doc_ref.update({
+                "human_override": True,
+                "original_strategy_id": original_strategy_id,
+                "override_reason": override_reason,
+                "override_at": datetime.now().isoformat(),
+                "outcome": "overridden"
+            })
             return True
-    return False
+        return False
+    else:
+        records = load_memory()
+        for record in records:
+            if str(record["id"]) == str(record_id):
+                record["human_override"] = True
+                record["original_strategy_id"] = original_strategy_id
+                record["override_reason"] = override_reason
+                record["override_at"] = datetime.now().isoformat()
+                record["outcome"] = "overridden"
+                _save_memory_local(records)
+                return True
+        return False
 
 
 def get_override_patterns() -> list[dict]:
-    """
-    Return strategies that humans have repeatedly overridden.
-    Injected into the Gemini prompt as a caution signal.
-    """
     records = load_memory()
     overrides = [r for r in records if r.get("human_override")]
     from collections import Counter
@@ -143,20 +177,21 @@ def get_override_patterns() -> list[dict]:
 
 
 def clear_memory() -> None:
-    """Wipe the disruption log. Use with care — for demo reset only."""
-    if os.path.exists(MEMORY_FILE):
-        os.remove(MEMORY_FILE)
+    if USE_FIREBASE:
+        # Delete all documents in collection
+        docs = db.collection("disruption_events").stream()
+        for doc in docs:
+            doc.reference.delete()
+    else:
+        if os.path.exists(MEMORY_FILE):
+            os.remove(MEMORY_FILE)
 
 
 # ---------------------------------------------------------------------------
-# ANALYTICS
+# ANALYTICS & REFLECTION CONTEXT
 # ---------------------------------------------------------------------------
 
 def get_stats() -> dict:
-    """
-    Compute high-level statistics across all logged disruptions.
-    Used to populate the Memory dashboard in the Streamlit UI.
-    """
     records = load_memory()
     if not records:
         return {
@@ -190,21 +225,7 @@ def get_stats() -> dict:
         "most_affected_location": location_counts.most_common(1)[0][0] if location_counts else "—",
     }
 
-
-# ---------------------------------------------------------------------------
-# REFLECTION CONTEXT (injected into the Gemini prompt)
-# ---------------------------------------------------------------------------
-
 def get_reflection_context(company: str | None = None) -> str:
-    """
-    Return a formatted string of past disruption decisions for inclusion in
-    the Gemini prompt. Filters by company if provided.
-
-    The agent uses this to:
-      1. Avoid strategies that previously led to stockouts.
-      2. Note if a supplier/route has been problematic before.
-      3. Increase confidence when a strategy has a strong track record.
-    """
     records = load_memory()
     if company:
         records = [r for r in records if r.get("company") == company]
@@ -215,10 +236,10 @@ def get_reflection_context(company: str | None = None) -> str:
             "This is the first recorded event — apply conservative defaults."
         )
 
-    recent = records[-5:]  # last 5 events
+    recent = records[-5:]
     lines = [f"Historical disruption memory ({len(records)} total events, showing last {len(recent)}):"]
 
-    for r in reversed(recent):  # newest first
+    for r in reversed(recent):
         outcome_icon = {"resolved": "✓", "stockout_occurred": "✗ STOCKOUT", "pending": "⏳"}.get(
             r["outcome"], "?"
         )
@@ -228,7 +249,6 @@ def get_reflection_context(company: str | None = None) -> str:
             f"(cost: ${r.get('cost_premium_usd', 0):,}) → Outcome: {outcome_icon}"
         )
 
-    # Derive insights for the agent
     stockout_strategies = {r["strategy_id"] for r in records if r["outcome"] == "stockout_occurred"}
     if stockout_strategies:
         lines.append(
