@@ -1,1 +1,1 @@
-worker: python python/daemon.py
+web: uvicorn python.api:app --host 0.0.0.0 --port $PORT

@@ -21,7 +21,8 @@ import os
 from erp_data import ERP_PROFILES, get_inventory_buffer_days, get_suppliers_as_dataframe_rows
 from maps_utils import geocode_location, get_transit_delay, assess_stockout_risk
 from agent import run_agent
-from memory import save_event, update_outcome, get_stats, load_memory, clear_memory
+from memory import save_event, update_outcome, get_stats, load_memory, clear_memory, get_reflection_context
+import requests
 
 # ---------------------------------------------------------------------------
 # 1. BOOTSTRAP
@@ -35,6 +36,8 @@ load_dotenv(os.path.join(_root, ".env"))   # project root .env  (where the key a
 # Support both GOOGLE_API_KEY (documented) and GEMINI_API_KEY (actual key name in .env)
 if not os.getenv("GOOGLE_API_KEY") and os.getenv("GEMINI_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
+
+BACKEND_URL = os.environ.get("BACKEND_URL")
 
 st.set_page_config(
     page_title="TranSignal — AI Supply Chain Co-Pilot",
@@ -145,19 +148,71 @@ def reset_pipeline() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. PIPELINE RUNNER
+# 4. PIPELINE RUNNER & API WRAPPERS
 # ---------------------------------------------------------------------------
+
+def api_update_outcome(record_id: str, outcome: str):
+    if BACKEND_URL:
+        requests.put(f"{BACKEND_URL}/memory/{record_id}/outcome", json={"outcome": outcome})
+    else:
+        update_outcome(record_id, outcome)
+
+def api_load_memory():
+    if BACKEND_URL:
+        try:
+            return requests.get(f"{BACKEND_URL}/memory").json().get("records", [])
+        except: return []
+    return load_memory()
+
+def api_get_stats():
+    if BACKEND_URL:
+        try:
+            return requests.get(f"{BACKEND_URL}/memory").json().get("stats", {})
+        except: return {"total_events": 0, "resolved": 0, "stockouts": 0, "success_rate_pct": 0, "total_cost_premium_usd": 0}
+    return get_stats()
+
+def api_clear_memory():
+    if BACKEND_URL:
+        requests.delete(f"{BACKEND_URL}/memory")
+    else:
+        clear_memory()
+
 def run_full_pipeline(event: dict) -> None:
     erp = active_erp()
     warehouse = erp["warehouse"]
     inv = erp["inventory"]
+    buf = get_inventory_buffer_days(erp)
+
+    if BACKEND_URL:
+        add_log("[SYSTEM] Executing pipeline via remote API...", "info")
+        try:
+            r1 = requests.post(f"{BACKEND_URL}/pipeline/perception", json={"event": event, "profile": erp}).json()
+            transit = r1["transit"]
+            st.session_state.maps_result = transit
+
+            r2 = requests.post(f"{BACKEND_URL}/pipeline/risk", json={"delay_added_days": transit["delay_added_days"], "inventory": inv, "buf_days": buf}).json()
+            risk = r2["risk"]
+            st.session_state.risk_result = risk
+
+            r3 = requests.post(f"{BACKEND_URL}/pipeline/reasoning", json={"event": event, "transit": transit, "risk": risk, "profile": erp}).json()
+            result = r3["result"]
+            st.session_state.agent_result = result
+            strategy = result.get("chosen_strategy", {})
+
+            r_mem = requests.post(f"{BACKEND_URL}/memory", json={"company": erp["company"], "event": event, "risk": risk, "strategy": strategy}).json()
+            rid = r_mem["record_id"]
+            st.session_state.memory_record_id = rid
+            add_log(f"[MEMORY] Event saved via remote API (record #{rid}).", "info")
+            add_log("[PIPELINE] Complete ✓  Review results in tabs below.", "success")
+        except Exception as e:
+            add_log(f"[ERROR] API failed: {e}", "critical")
+        return
 
     # ── Stage 1: Perception ─────────────────────────────────────────────────
     transit, geo = run_full_pipeline_step1_perception(event, erp, add_log)
     st.session_state.maps_result = transit
 
     # ── Stage 2: Risk Assessment ─────────────────────────────────────────────
-    buf = get_inventory_buffer_days(erp)
     risk = run_full_pipeline_step2_risk(transit["delay_added_days"], inv, buf, add_log)
     st.session_state.risk_result = risk
 
@@ -367,7 +422,7 @@ if st.session_state.disruption_triggered and st.session_state.disruption_event:
 # ── Background Daemon Observer ───────────────────────────────────────────────
 st.divider()
 st.subheader("🕵️ Background Daemon Observer")
-_records = load_memory()
+_records = api_load_memory()
 _auto_records = [r for r in _records if r.get("event_source") == "AUTO_DETECTED_RSS" or r.get("source") == "AUTO_DETECTED_RSS"]
 
 if not _auto_records:
@@ -517,7 +572,13 @@ _dtype_colors = {
 }
 
 with st.spinner("Fetching global supply chain news…"):
-    _news_articles = fetch_supply_chain_news(_news_key)
+    if BACKEND_URL:
+        try:
+            _news_articles = requests.get(f"{BACKEND_URL}/news", params={"company": _news_key}).json().get("articles", [])
+        except:
+            _news_articles = []
+    else:
+        _news_articles = fetch_supply_chain_news(_news_key)
 
 if not _news_articles:
     st.info(
@@ -808,7 +869,7 @@ if st.session_state.agent_result:
             st.metric("AI (days gained)", f"{sla_days_buffer_ai} days", delta=f"+{speed_gain} days", delta_color="normal")
 
             st.markdown("**🧠 Memory & Learning**")
-            mem_stats_brief = get_stats()
+            mem_stats_brief = api_get_stats()
             st.metric("Past Events in Memory", f"{mem_stats_brief['total_events']}")
             st.metric("Success Rate", f"{mem_stats_brief['success_rate_pct']}%",
                       delta="Improving over time" if mem_stats_brief["total_events"] > 0 else "No data yet",
@@ -966,7 +1027,7 @@ if st.session_state.agent_result:
             st.success("✅ **Autonomous action authorised** — within threshold, no approval needed.")
             if st.button("✅ Mark as Resolved", use_container_width=True):
                 if st.session_state.memory_record_id:
-                    update_outcome(st.session_state.memory_record_id, "resolved")
+                    api_update_outcome(st.session_state.memory_record_id, "resolved")
                 add_log("[MEMORY] Outcome marked: resolved.", "success")
                 st.success("Outcome saved to disruption memory.")
 
@@ -977,12 +1038,12 @@ if st.session_state.agent_result:
         with oc1:
             if st.button("✓ Mark Resolved", use_container_width=True):
                 if st.session_state.memory_record_id:
-                    update_outcome(st.session_state.memory_record_id, "resolved")
+                    api_update_outcome(st.session_state.memory_record_id, "resolved")
                 st.success("Marked resolved.")
         with oc2:
             if st.button("✗ Stockout Occurred", use_container_width=True):
                 if st.session_state.memory_record_id:
-                    update_outcome(st.session_state.memory_record_id, "stockout_occurred")
+                    api_update_outcome(st.session_state.memory_record_id, "stockout_occurred")
                 st.error("Marked stockout — agent will deprioritise this strategy next time.")
 
         # Transit analysis
@@ -1009,8 +1070,8 @@ if st.session_state.agent_result:
 
     # ── TAB 4: Memory & Learning ──────────────────────────────────────────────
     with tab_memory:
-        stats = get_stats()
-        records = load_memory()
+        stats = api_get_stats()
+        records = api_load_memory()
 
         st.markdown("### 🗂 Disruption Memory — Agent Learning Over Time")
         st.caption(
@@ -1048,12 +1109,11 @@ if st.session_state.agent_result:
 
             st.divider()
             st.markdown("**🧠 Reflection Context** *(injected into next Gemini prompt)*")
-            from memory import get_reflection_context
             st.code(get_reflection_context(erp["company"]), language="text")
 
             st.divider()
             if st.button("🗑️ Clear All Memory", use_container_width=True):
-                clear_memory()
+                api_clear_memory()
                 st.success("Memory cleared.")
                 st.rerun()
 
@@ -1069,7 +1129,7 @@ erp = active_erp()
 gemini_src = ""
 if st.session_state.agent_result:
     gemini_src = " · Gemini: " + ("mock" if st.session_state.agent_result.get("_is_mock") else "live")
-mem_count = get_stats()["total_events"]
+mem_count = api_get_stats().get("total_events", 0)
 
 st.caption(
     f"TranSignal · {erp['company']} · "

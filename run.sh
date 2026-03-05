@@ -12,8 +12,8 @@ source "$PYTHON_DIR/.venv/bin/activate"
 
 cd "$PYTHON_DIR"
 
-echo "🚀 Starting Autonomous Background Daemon..."
-python3 daemon.py &
+echo "🚀 Starting FastAPI Backend (which includes the autonomous daemon)..."
+python3 -m uvicorn api:app --host 0.0.0.0 --port 8000 &
 DAEMON_PID=$!
 
 function cleanup {
