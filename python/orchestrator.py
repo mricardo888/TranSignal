@@ -124,18 +124,27 @@ def run_full_pipeline_step1_perception(event: dict, erp: dict, add_log_cb):
     )
     return transit, geo
 
-def run_full_pipeline_step2_risk(delay_added_days: float, inv: dict, buf: float, add_log_cb):
+def run_full_pipeline_step2_risk(delay_added_days: float, erp: dict, add_log_cb):
+    inv = erp["inventory"]
+    buf = inv["on_hand_units"] / inv["burn_rate_per_day"]
     risk = assess_stockout_risk(delay_added_days, buf, inv["safety_stock_days"])
+    
+    # Calculate revenue at risk if stockout occurs
+    revenue_per_day = erp["sla"].get("revenue_per_day", 0)
+    days_short = max(0, risk["inbound_delay_days"] - risk["inventory_buffer_days"])
+    revenue_at_risk = days_short * revenue_per_day
+    risk["revenue_at_risk_usd"] = revenue_at_risk
     
     level_map = {"LOW": "info", "MEDIUM": "warning", "HIGH": "critical", "CRITICAL": "critical"}
     add_log_cb(
-        f"[RISK] Buffer {risk['inventory_buffer_days']}d − delay {risk['inbound_delay_days']}d "
-        f"= {risk['net_days_remaining']}d remaining | Urgency: {risk['urgency']}",
+        f"[RISK] Buffer {risk['inventory_buffer_days']:.1f}d − delay {risk['inbound_delay_days']:.1f}d "
+        f"= {risk['net_days_remaining']:.1f}d remaining | Urgency: {risk['urgency']}",
         level_map.get(risk["urgency"], "warning"),
     )
     if risk["stockout_will_occur"]:
         add_log_cb(
-            f"[RISK] ⚠ STOCKOUT WARNING — net buffer below {risk['safety_stock_days']}d safety stock.",
+            f"[RISK] ⚠ STOCKOUT WARNING — net buffer below {risk['safety_stock_days']:.1f}d safety stock. "
+            f"Revenue at Risk: ${revenue_at_risk:,.2f}",
             "critical",
         )
     return risk

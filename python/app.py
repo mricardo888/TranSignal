@@ -145,6 +145,7 @@ def reset_pipeline() -> None:
     st.session_state.risk_result          = None
     st.session_state.agent_result         = None
     st.session_state.memory_record_id     = None
+    st.session_state.chat_messages        = []
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +191,7 @@ def run_full_pipeline(event: dict) -> None:
             transit = r1["transit"]
             st.session_state.maps_result = transit
 
-            r2 = requests.post(f"{BACKEND_URL}/pipeline/risk", json={"delay_added_days": transit["delay_added_days"], "inventory": inv, "buf_days": buf}).json()
+            r2 = requests.post(f"{BACKEND_URL}/pipeline/risk", json={"delay_added_days": transit["delay_added_days"], "profile": erp}).json()
             risk = r2["risk"]
             st.session_state.risk_result = risk
 
@@ -213,7 +214,7 @@ def run_full_pipeline(event: dict) -> None:
     st.session_state.maps_result = transit
 
     # ── Stage 2: Risk Assessment ─────────────────────────────────────────────
-    risk = run_full_pipeline_step2_risk(transit["delay_added_days"], inv, buf, add_log)
+    risk = run_full_pipeline_step2_risk(transit["delay_added_days"], erp, add_log)
     st.session_state.risk_result = risk
 
     # ── Stage 3: Gemini Reasoning ────────────────────────────────────────────
@@ -896,12 +897,13 @@ if st.session_state.agent_result:
     st.divider()
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab_reason, tab_strategy, tab_email, tab_memory, tab_raw = st.tabs([
+    tab_reason, tab_strategy, tab_email, tab_memory, tab_raw, tab_chat = st.tabs([
         "🧠 Reasoning Trace",
         "⚡ Strategy & Action",
         "📧 Draft Email",
         "🗂 Memory & Learning",
         "🔩 Raw JSON",
+        "💬 Chat & Plan | Powered by Gemini",
     ])
 
     # ── TAB 1: Reasoning Trace ────────────────────────────────────────────────
@@ -1012,6 +1014,22 @@ if st.session_state.agent_result:
                 f'</div>',
                 unsafe_allow_html=True,
             )
+            # ERP Payload
+            erp_update = result.get("suggested_erp_po_update")
+            if erp_update:
+                st.markdown("### 🔌 Auto-Generated ERP JSON Payload")
+                st.json(erp_update)
+                
+                col1, col2 = st.columns([1, 4])
+                with col1:
+                    btn_disabled = hitl["requires_human_approval"]
+                    btn_help = "Requires management approval" if btn_disabled else "Send via API"
+                    if st.button("Transmit to ERP", type="primary", disabled=btn_disabled, help=btn_help):
+                        st.success("✅ Payload transmitted to ERP system successfully.")
+                with col2:
+                    if btn_disabled:
+                        st.warning("🔒 API transmission locked: Awaiting human approval.")
+
             ca, cr = st.columns(2)
             with ca:
                 if st.button("✅ Approve & Send Email", use_container_width=True, type="primary"):
@@ -1120,6 +1138,47 @@ if st.session_state.agent_result:
     # ── TAB 5: Raw JSON ───────────────────────────────────────────────────────
     with tab_raw:
         st.code(_json.dumps(result, indent=2), language="json")
+
+    # ── TAB 6: Chat & Plan | Powered by Gemini ────────────────────────────────
+    with tab_chat:
+        st.markdown("### Interactive Strategic Co-Pilot")
+        st.caption("Discuss the disruption, request plan adjustments, or ask for more context.")
+        
+        if "chat_messages" not in st.session_state:
+            st.session_state.chat_messages = []
+            
+        # Display chat messages
+        for msg in st.session_state.chat_messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+                
+        # Chat input
+        if prompt := st.chat_input("Ask about this disruption..."):
+            st.session_state.chat_messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+                
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    ctx = {
+                        "erp_data": erp,
+                        "disruption_event": st.session_state.disruption_event,
+                        "agent_result": result
+                    }
+                    if BACKEND_URL:
+                        reply = requests.post(
+                            f"{BACKEND_URL}/chat", 
+                            json={
+                                "chat_history": st.session_state.chat_messages[:-1], 
+                                "user_message": prompt, 
+                                "context_data": ctx
+                            }
+                        ).json().get("reply", "Error")
+                    else:
+                        from agent import run_chat_turn
+                        reply = run_chat_turn(st.session_state.chat_messages[:-1], prompt, ctx)
+                st.markdown(reply)
+            st.session_state.chat_messages.append({"role": "assistant", "content": reply})
 
 # ---------------------------------------------------------------------------
 # FOOTER

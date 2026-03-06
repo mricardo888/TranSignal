@@ -130,6 +130,13 @@ _MOCK_ACME = {
             "exceeds $20,000 autonomous action threshold.]"
         ),
     },
+    "suggested_erp_po_update": {
+        "update_type": "CREATE_PO",
+        "supplier_id": "SUP-B",
+        "sku": "ISM-4400",
+        "quantity_change": 500,
+        "estimated_cost_usd": 23000,
+    },
     "hitl_flag": {
         "requires_human_approval": True,
         "reason": "Emergency order value (~$23,000) exceeds the $20,000 autonomous action threshold.",
@@ -252,6 +259,13 @@ _MOCK_TEXMEX = {
             "No human approval required.]"
         ),
     },
+    "suggested_erp_po_update": {
+        "update_type": "CREATE_PO",
+        "supplier_id": "SUP-X2",
+        "sku": "AWH-2200",
+        "quantity_change": 3000,
+        "estimated_cost_usd": 43500,
+    },
     "hitl_flag": {
         "requires_human_approval": False,
         "reason": "Order value ($43,500) is below the $50,000 autonomous action threshold for TexMex Components.",
@@ -301,11 +315,19 @@ class HitlFlag(BaseModel):
     escalate_to: Optional[str] = Field(description="Role to escalate to, or null if fully autonomous", default=None)
     deadline_hours: Optional[int] = Field(description="Hours until a decision is required", default=None)
 
+class SuggestedERPUpdate(BaseModel):
+    update_type: Literal["CREATE_PO", "MODIFY_PO", "CANCEL_PO", "NONE"] = Field(description="The type of ERP action required")
+    supplier_id: Optional[str] = Field(description="The ID of the supplier for this PO", default=None)
+    sku: Optional[str] = Field(description="The internal SKU code being ordered", default=None)
+    quantity_change: Optional[int] = Field(description="The net change in unit quantity (+ for new/increase, - for decrease)", default=None)
+    estimated_cost_usd: Optional[int] = Field(description="The estimated total cost of this PO update in USD", default=None)
+
 class AgentDecision(BaseModel):
     reasoning_trace: list[ReasoningStep] = Field(description="5 reasoning steps covering all 5 stages of the pipeline")
     risk_assessment: RiskAssessment = Field(description="Assessment of current stockout risk")
     chosen_strategy: ChosenStrategy = Field(description="The optimal strategy selected by the agent")
     draft_email: DraftEmail = Field(description="Auto-generated procurement email")
+    suggested_erp_po_update: SuggestedERPUpdate = Field(description="Structured JSON payload for updating the ERP system")
     hitl_flag: HitlFlag = Field(description="Human-in-the-loop escalation rules")
 
 # ---------------------------------------------------------------------------
@@ -382,10 +404,9 @@ def _build_prompt(
             if sup["name"] in [s["name"] for s in cost_rank]
             else 1
         ]
-        health_score = 85 if has_active_po else 60
-        health_score -= (lead_time // 7) * 5  # penalise long lead times
+        health_score = int(sup.get("reliability_score", 0) * 100)
         health_lines.append(
-            f"  - {sup['name']} [{sup['role']}]: Health={health_score}/100 | "
+            f"  - {sup['name']} [{sup['role']}]: Historic Reliability={health_score}% | "
             f"Engagement={activity} | Speed={speed_score} | Cost position={cost_position}"
         )
     suppliers_block = "\n".join(supplier_lines)
@@ -536,3 +557,62 @@ def run_agent(
         fallback["_api_error"] = str(exc)
         fallback["_is_mock"] = True
         return fallback
+
+# ---------------------------------------------------------------------------
+# CHAT CO-PILOT ENTRY POINT
+# ---------------------------------------------------------------------------
+
+def run_chat_turn(
+    chat_history: list[dict],
+    user_message: str,
+    context_data: dict,
+) -> str:
+    """
+    Handle a multi-turn conversation about the disruption context.
+    chat_history is a list of {"role": "user"|"model", "content": text}
+    """
+    company = context_data.get("erp_data", {}).get("company", "")
+    api_key = (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+    
+    if not api_key or api_key == "your_gemini_api_key_here":
+        return "I am operating in mock mode (no API key). This is a simulated response to: " + user_message
+
+    try:
+        client = genai.Client(api_key=api_key)
+        
+        agent_result = context_data.get('agent_result', {})
+        strategy = agent_result.get('chosen_strategy', {}) if isinstance(agent_result, dict) else {}
+        strategy_name = strategy.get('name', 'None') if isinstance(strategy, dict) else str(strategy)
+        
+        system_prompt = f"""You are the TranSignal Strategic Co-Pilot. You have already assessed a supply chain disruption and proposed a strategy.
+Now the human supply chain manager is asking you questions or requesting adjustments to the plan.
+Be concise, professional, and data-driven. Refuse to answer questions outside of supply chain operations.
+
+=== CONTEXT ===
+Company: {company}
+Event: {context_data.get('disruption_event', {}).get('event')} at {context_data.get('disruption_event', {}).get('location')}
+Chosen Strategy: {strategy_name}
+"""
+        
+        contents = []
+        for msg in chat_history[-5:]: # Keep it short 
+            role = "user" if msg["role"] == "user" else "model"
+            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])]))
+            
+        contents.append(types.Content(role="user", parts=[types.Part.from_text(text=user_message)]))
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                client.models.generate_content,
+                model="gemini-2.5-flash",
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt
+                ),
+            )
+            response = future.result(timeout=30)
+            return response.text
+            
+    except Exception as exc:
+        return f"Error connecting to AI assistant: {str(exc)}"
+

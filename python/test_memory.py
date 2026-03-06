@@ -15,13 +15,18 @@ import tempfile
 _temp_dir = tempfile.mkdtemp()
 _temp_memory_file = os.path.join(_temp_dir, "test_disruption_log.json")
 
+# Ensure tests don't hit production Firebase
+os.environ["FIREBASE_CREDENTIALS"] = ""
+
 import memory
 memory.MEMORY_FILE = _temp_memory_file
+memory.USE_FIREBASE = False
 
 
 # ---------------------------------------------------------------------------
 # FIXTURES
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def clean_memory():
@@ -50,7 +55,7 @@ class TestCorePersistence:
 
     def test_save_event_returns_id(self):
         rid = memory.save_event("AcmeMfg", SAMPLE_EVENT, SAMPLE_RISK, SAMPLE_STRATEGY)
-        assert rid == 1
+        assert rid == "1"
 
     def test_save_creates_file(self):
         memory.save_event("AcmeMfg", SAMPLE_EVENT, SAMPLE_RISK, SAMPLE_STRATEGY)
@@ -69,9 +74,9 @@ class TestCorePersistence:
         r1 = memory.save_event("A", SAMPLE_EVENT, SAMPLE_RISK, SAMPLE_STRATEGY)
         r2 = memory.save_event("B", SAMPLE_EVENT, SAMPLE_RISK, SAMPLE_STRATEGY)
         r3 = memory.save_event("C", SAMPLE_EVENT, SAMPLE_RISK, SAMPLE_STRATEGY)
-        assert r1 == 1
-        assert r2 == 2
-        assert r3 == 3
+        assert r1 == "1"
+        assert r2 == "2"
+        assert r3 == "3"
 
 
 # ---------------------------------------------------------------------------

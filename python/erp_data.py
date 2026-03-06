@@ -48,6 +48,7 @@ _ACME = {
             "contact_email": "orders@precisionparts.de",
             "role": "Primary",
             "color": [56, 139, 253, 220],
+            "reliability_score": 0.95,
         },
         "secondary": {
             "id": "SUP-B",
@@ -63,6 +64,7 @@ _ACME = {
             "contact_email": "procurement@motoresavanzados.mx",
             "role": "Secondary",
             "color": [63, 185, 80, 220],
+            "reliability_score": 0.82,
         },
         "tertiary": {
             "id": "SUP-C",
@@ -78,6 +80,7 @@ _ACME = {
             "contact_email": "sales@vietprecision.vn",
             "role": "Tertiary",
             "color": [210, 153, 34, 220],
+            "reliability_score": 0.75,
         },
     },
 
@@ -95,6 +98,7 @@ _ACME = {
         "daily_production_value_usd": 85_000,
         "key_customer": "EuroAuto Industries",
         "autonomous_action_limit_usd": 20_000,
+        "revenue_per_day": 85_000,
     },
 
     # Default map view: centred on Europe/Asia
@@ -147,6 +151,7 @@ _TEXMEX = {
             "contact_email": "ops@grupoelectrico.mx",
             "role": "Primary",
             "color": [56, 139, 253, 220],
+            "reliability_score": 0.88,
         },
         "secondary": {
             "id": "SUP-X2",
@@ -162,6 +167,7 @@ _TEXMEX = {
             "contact_email": "orders@autowireusa.com",
             "role": "Secondary",
             "color": [63, 185, 80, 220],
+            "reliability_score": 0.99,
         },
         "tertiary": {
             "id": "SUP-X3",
@@ -177,6 +183,7 @@ _TEXMEX = {
             "contact_email": "export@gzharnessworks.cn",
             "role": "Tertiary",
             "color": [210, 153, 34, 220],
+            "reliability_score": 0.85,
         },
     },
 
@@ -194,6 +201,7 @@ _TEXMEX = {
         "daily_production_value_usd": 120_000,
         "key_customer": "Ford Motor Company — Hermosillo Plant",
         "autonomous_action_limit_usd": 50_000,  # higher autonomy threshold
+        "revenue_per_day": 120_000,
     },
 
     # Default map view: centred on Americas

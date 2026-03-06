@@ -43,8 +43,7 @@ class EventPayload(BaseModel):
 
 class RiskPayload(BaseModel):
     delay_added_days: float
-    inventory: Dict[str, Any]
-    buf_days: float
+    profile: Dict[str, Any]
 
 class ReasoningPayload(BaseModel):
     event: Dict[str, Any]
@@ -87,7 +86,7 @@ def perception_step(req: EventPayload):
 @app.post("/pipeline/risk")
 def risk_step(req: RiskPayload):
     try:
-        risk = run_full_pipeline_step2_risk(req.delay_added_days, req.inventory, req.buf_days, lambda msg, lvl="info": None)
+        risk = run_full_pipeline_step2_risk(req.delay_added_days, req.profile, lambda msg, lvl="info": None)
         return {"risk": risk}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -97,6 +96,20 @@ def reasoning_step(req: ReasoningPayload):
     try:
         result = run_full_pipeline_step3_reasoning(req.event, req.transit, req.risk, req.profile, lambda msg, lvl="info": None)
         return {"result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ChatPayload(BaseModel):
+    chat_history: List[Dict[str, str]]
+    user_message: str
+    context_data: Dict[str, Any]
+
+@app.post("/chat")
+def chat_step(req: ChatPayload):
+    from agent import run_chat_turn
+    try:
+        reply = run_chat_turn(req.chat_history, req.user_message, req.context_data)
+        return {"reply": reply}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
