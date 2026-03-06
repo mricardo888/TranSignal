@@ -13,6 +13,9 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 import uvicorn
 
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from orchestrator import (
     fetch_supply_chain_news,
     run_full_pipeline_step1_perception,
