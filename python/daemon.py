@@ -98,8 +98,7 @@ def monitor_loop(interval_seconds: int = 60, max_iterations: int = 0):
                         transit, geo = run_full_pipeline_step1_perception(event, profile, add_log_cb)
                         
                         # 2: Risk
-                        buf_days = profile["inventory"]["on_hand_units"] / profile["inventory"]["burn_rate_per_day"]
-                        risk = run_full_pipeline_step2_risk(transit["delay_added_days"], profile["inventory"], buf_days, add_log_cb)
+                        risk = run_full_pipeline_step2_risk(transit["delay_added_days"], profile, add_log_cb)
                         
                         # 3: Reasoning & Strategy
                         result = run_full_pipeline_step3_reasoning(event, transit, risk, profile, add_log_cb)
