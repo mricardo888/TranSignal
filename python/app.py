@@ -14,6 +14,7 @@ import json as _json
 import streamlit as st
 import pandas as pd
 import pydeck as pdk
+import altair as alt
 from datetime import datetime
 from dotenv import load_dotenv
 import os
@@ -470,6 +471,13 @@ with col_map:
                 "tgt_lon": wh["lon"],        "tgt_lat": wh["lat"],
                 "color_src": [63, 185, 80],  "color_tgt": [63, 185, 80],
             })
+        elif strategy_id == "ACTIVATE_TERTIARY":
+            tertiary = erp["suppliers"].get("tertiary", secondary)
+            arc_data.append({
+                "src_lon": tertiary["lon"], "src_lat": tertiary["lat"],
+                "tgt_lon": wh["lon"],        "tgt_lat": wh["lat"],
+                "color_src": [63, 185, 80],  "color_tgt": [63, 185, 80],
+            })
 
     layers = [
         pdk.Layer("ScatterplotLayer", data=df,
@@ -653,7 +661,12 @@ if st.session_state.agent_result:
             ],
             "USD": [revenue_saved, cost_premium, net_saving],
         })
-        st.bar_chart(df_fin.set_index("Scenario"), color="#3fb950", use_container_width=True)
+        chart_fin = alt.Chart(df_fin).mark_bar(color="#3fb950").encode(
+            x=alt.X("Scenario", axis=alt.Axis(labelAngle=0, title=None)),
+            y=alt.Y("USD", axis=alt.Axis(title=None)),
+            tooltip=["Scenario", "USD"]
+        )
+        st.altair_chart(chart_fin, use_container_width=True)
         pct_preserved = int(net_saving / max(revenue_saved, 1) * 100)
         st.caption(
             f"AI plan preserves **{pct_preserved}%** of at-risk revenue vs. inaction — "
@@ -673,8 +686,13 @@ if st.session_state.agent_result:
                 "_cost": sup["unit_cost_usd"],
                 "_role": role,
             })
-        df_sup = pd.DataFrame(sup_rows).set_index("Option")
-        st.bar_chart(df_sup[["Lead Time (days)"]], color="#58a6ff", use_container_width=True)
+        df_sup = pd.DataFrame(sup_rows)
+        chart_sup = alt.Chart(df_sup).mark_bar(color="#58a6ff").encode(
+            x=alt.X("Option", axis=alt.Axis(labelAngle=0, title=None)),
+            y=alt.Y("Lead Time (days)", axis=alt.Axis(title=None)),
+            tooltip=["Option", "Lead Time (days)"]
+        )
+        st.altair_chart(chart_sup, use_container_width=True)
 
         # Speed gain vs. doing-nothing (waiting on disrupted primary)
         primary_disrupted = erp["suppliers"]["primary"]["normal_lead_time_days"] + delay_days
@@ -727,7 +745,12 @@ if st.session_state.agent_result:
             "Scenario": ["Do Nothing", "AI Plan"],
             "SLA Compliance (%)": [do_nothing_sla, ai_sla],
         })
-        st.bar_chart(df_sla.set_index("Scenario"), color="#58a6ff", use_container_width=True)
+        chart_sla = alt.Chart(df_sla).mark_bar(color="#58a6ff").encode(
+            x=alt.X("Scenario", axis=alt.Axis(labelAngle=0, title=None)),
+            y=alt.Y("SLA Compliance (%)", axis=alt.Axis(title=None)),
+            tooltip=["Scenario", "SLA Compliance (%)"]
+        )
+        st.altair_chart(chart_sla, use_container_width=True)
         sla_gain = ai_sla - do_nothing_sla
         st.caption(
             f"AI plan achieves **{ai_sla}% SLA compliance** vs. **{do_nothing_sla}%** with inaction — "
@@ -752,7 +775,12 @@ if st.session_state.agent_result:
             "Scenario": ["Do Nothing", "AI Plan"],
             "Stockout Probability (%)": [do_nothing_stockout, ai_stockout],
         })
-        st.bar_chart(df_stockout.set_index("Scenario"), color="#f85149", use_container_width=True)
+        chart_stockout = alt.Chart(df_stockout).mark_bar(color="#f85149").encode(
+            x=alt.X("Scenario", axis=alt.Axis(labelAngle=0, title=None)),
+            y=alt.Y("Stockout Probability (%)", axis=alt.Axis(title=None)),
+            tooltip=["Scenario", "Stockout Probability (%)"]
+        )
+        st.altair_chart(chart_stockout, use_container_width=True)
         reduction_pct = do_nothing_stockout - ai_stockout
         st.caption(
             f"Stockout probability drops from **{do_nothing_stockout}%** to **{ai_stockout}%** — "
