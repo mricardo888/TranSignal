@@ -1,6 +1,7 @@
 # 🏭 TranSignal
-**Autonomous Supply Chain Resilience Agent • AI Operations Co-Pilot**
 
+[![TranSignal Repo Card](https://opengraph.githubassets.com/1/mricardo888/TranSignal)](https://github.com/mricardo888/TranSignal)
+**Autonomous Supply Chain Resilience Agent • AI Operations Co-Pilot**
 TranSignal is an Autonomous Supply Chain Resilience Agent designed to help mid-market manufacturers proactively predict, mitigate, and respond to global supply chain disruptions. 
 
 Developed in response to the **Hack the Future (HTF)** case challenge, TranSignal leverages Google's **Gemini 2.5 Flash GenAI** to function as an intelligent operations co-pilot. It moves beyond traditional static dashboards by actively perceiving disruption signals, reasoning through complex logistics scenarios, simulating financial trade-offs, and orchestrating mitigation strategies—all before SLA breaches or production line stockouts occur.
